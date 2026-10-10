@@ -1,0 +1,387 @@
+// Beach Avenue! Admin — database schema
+//
+// Conventions
+// - All DateTime values are stored in UTC. Display code must state the timezone.
+// - `source` marks where a record came from. DEMO records are seed data only and
+//   must never be treated as live game data or targeted by live commands.
+// - Roblox UserIds are stored as decimal strings to stay safe beyond 2^53 and to
+//   avoid BigInt serialization issues. DEMO players use negative ids (Roblox's own
+//   convention for local test players), so they can never match a real account.
+// - The URL is configured in prisma.config.ts (Prisma 7), not here.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+// ---------------------------------------------------------------------------
+// Administrators, sessions and authentication
+// ---------------------------------------------------------------------------
+
+enum AdminRole {
+  OWNER
+  ADMIN
+  MODERATOR
+  VIEWER
+}
+
+model AdminUser {
+  id                String     @id @default(cuid())
+  /// Lowercase, validated by src/lib/validation/auth.ts
+  username          String     @unique
+  displayName       String
+  /// argon2id PHC string. Never logged, never sent to the browser.
+  passwordHash      String
+  role              AdminRole  @default(VIEWER)
+  /// Deactivate instead of deleting so audit history keeps its actor.
+  isActive          Boolean    @default(true)
+  lastLoginAt       DateTime?
+  passwordChangedAt DateTime   @default(now())
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+
+  sessions          Session[]
+  auditLogs         AuditLog[]
+  configVersions    ConfigVersion[]
+  commands          AdminCommand[]
+}
+
+model Session {
+  /// SHA-256 (hex) of the session token. The raw token only exists in the
+  /// browser cookie, so a database leak does not leak usable sessions.
+  id                String    @id
+  adminUserId       String
+  adminUser         AdminUser @relation(fields: [adminUserId], references: [id], onDelete: Cascade)
+  /// Sliding idle expiry.
+  expiresAt         DateTime
+  /// Hard cap regardless of activity.
+  absoluteExpiresAt DateTime
+  lastSeenAt        DateTime  @default(now())
+  /// Informational only unless TRUST_PROXY=true.
+  ipAddress         String?
+  userAgent         String?
+  createdAt         DateTime  @default(now())
+
+  @@index([adminUserId])
+  @@index([expiresAt])
+}
+
+/// Used for login throttling. Pruned periodically; not part of the audit trail
+/// (login events are also written to AuditLog).
+model LoginAttempt {
+  id        String   @id @default(cuid())
+  username  String
+  ipAddress String?
+  success   Boolean
+  createdAt DateTime @default(now())
+
+  @@index([username, createdAt])
+  @@index([ipAddress, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Audit log — append-only (enforced by database triggers in the migration)
+// ---------------------------------------------------------------------------
+
+enum AuditResult {
+  SUCCESS
+  FAILURE
+  DENIED
+  ERROR
+}
+
+model AuditLog {
+  id            String      @id @default(cuid())
+  createdAt     DateTime    @default(now())
+  /// Null for unauthenticated events (e.g. failed login for unknown user) and CLI actions.
+  actorAdminId  String?
+  actorAdmin    AdminUser?  @relation(fields: [actorAdminId], references: [id], onDelete: Restrict)
+  /// Snapshot so the record stays readable even if the admin is renamed.
+  actorUsername String?
+  /// Dotted action name, e.g. "auth.login". See src/lib/audit/actions.ts.
+  action        String
+  targetType    String?
+  targetId      String?
+  result        AuditResult
+  /// Links integration requests/commands to their audit entries.
+  correlationId String?
+  ipAddress     String?
+  /// Redacted structured details. Never contains passwords, tokens or API keys.
+  details       Json?
+
+  @@index([createdAt])
+  @@index([action, createdAt])
+  @@index([actorAdminId, createdAt])
+  @@index([correlationId])
+}
+
+// ---------------------------------------------------------------------------
+// Game domain
+// ---------------------------------------------------------------------------
+
+enum DataSource {
+  /// Seed data for development. Never live game data.
+  DEMO
+  /// Entered by an administrator in this dashboard.
+  MANUAL
+  /// Synchronized from the live game through a verified integration (Phase 4).
+  ROBLOX
+}
+
+enum PlayerModerationStatus {
+  NONE
+  WARNED
+  RESTRICTED
+  BANNED
+}
+
+model Player {
+  id               String                 @id @default(cuid())
+  robloxUserId     String                 @unique
+  username         String?
+  displayName      String?
+  coins            Int?
+  xp               Int?
+  level            Int?
+  /// Dashboard-side record only. A live ban requires a game-side ban system.
+  moderationStatus PlayerModerationStatus @default(NONE)
+  lastSeenAt       DateTime?
+  source           DataSource
+  syncedAt         DateTime?
+  createdAt        DateTime               @default(now())
+  updatedAt        DateTime               @updatedAt
+
+  @@index([username])
+  @@index([source])
+}
+
+model Rarity {
+  id        String       @id @default(cuid())
+  key       String       @unique
+  name      String
+  /// Ordering, 1 = most common.
+  tier      Int          @unique
+  /// Hex color, e.g. "#9CA3AF".
+  color     String
+  source    DataSource
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  fish      Fish[]
+  fishSkins FishSkin[]
+  rods      FishingRod[]
+  pets      Pet[]
+}
+
+model Fish {
+  id          String     @id @default(cuid())
+  key         String     @unique
+  name        String
+  rarityId    String
+  rarity      Rarity     @relation(fields: [rarityId], references: [id], onDelete: Restrict)
+  /// Coins awarded at base weight.
+  baseValue   Int
+  minWeightKg Float
+  maxWeightKg Float
+  isEnabled   Boolean    @default(true)
+  source      DataSource
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  skins       FishSkin[]
+
+  @@index([rarityId])
+}
+
+model FishSkin {
+  id        String     @id @default(cuid())
+  key       String     @unique
+  name      String
+  fishId    String
+  fish      Fish       @relation(fields: [fishId], references: [id], onDelete: Restrict)
+  rarityId  String
+  rarity    Rarity     @relation(fields: [rarityId], references: [id], onDelete: Restrict)
+  isEnabled Boolean    @default(true)
+  source    DataSource
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  @@index([fishId])
+}
+
+model FishingRod {
+  id         String     @id @default(cuid())
+  key        String     @unique
+  name       String
+  rarityId   String
+  rarity     Rarity     @relation(fields: [rarityId], references: [id], onDelete: Restrict)
+  /// Multiplier, 1.0 = baseline.
+  catchSpeed Float
+  /// Multiplier, 1.0 = baseline.
+  luck       Float
+  /// Additive bonus, 0.0 = none.
+  reelBonus  Float
+  price      Int?
+  isEnabled  Boolean    @default(true)
+  source     DataSource
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+
+  @@index([rarityId])
+}
+
+enum PetBonusType {
+  LUCK
+  CATCH_SPEED
+  REEL_BONUS
+  COIN_MULTIPLIER
+  XP_MULTIPLIER
+}
+
+model Pet {
+  id          String       @id @default(cuid())
+  key         String       @unique
+  name        String
+  rarityId    String
+  rarity      Rarity       @relation(fields: [rarityId], references: [id], onDelete: Restrict)
+  bonusType   PetBonusType
+  bonusValue  Float
+  unlockLevel Int?
+  unlockNote  String?
+  isEnabled   Boolean      @default(true)
+  source      DataSource
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  @@index([rarityId])
+}
+
+enum EventStatus {
+  DRAFT
+  SCHEDULED
+  ACTIVE
+  COMPLETED
+  CANCELLED
+}
+
+model GameEvent {
+  id              String      @id @default(cuid())
+  title           String
+  description     String
+  /// UTC instant.
+  startsAt        DateTime
+  /// UTC instant.
+  endsAt          DateTime
+  /// IANA timezone used when the event was authored, e.g. "UTC" or "Asia/Jakarta".
+  displayTimezone String      @default("UTC")
+  /// Administrative label. No automatic scheduler changes this yet.
+  status          EventStatus @default(DRAFT)
+  /// Validated reward definition (see Phase 2).
+  rewards         Json?
+  source          DataSource
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  @@index([status, startsAt])
+}
+
+// ---------------------------------------------------------------------------
+// Configuration versioning (draft vs. published) — used from Phase 2
+// ---------------------------------------------------------------------------
+
+enum ConfigScope {
+  FISHING
+  PETS
+  GACHA
+}
+
+enum ConfigStatus {
+  /// Saved in the dashboard, not sent anywhere.
+  DRAFT
+  /// Submitted for delivery; not yet accepted by a game server.
+  PENDING
+  /// Accepted by the game server (requires a verified integration).
+  ACTIVE
+  /// Replaced by a newer ACTIVE version.
+  SUPERSEDED
+  /// Refused by validation or by the game server.
+  REJECTED
+}
+
+model ConfigVersion {
+  id             String       @id @default(cuid())
+  scope          ConfigScope
+  version        Int
+  status         ConfigStatus @default(DRAFT)
+  /// Immutable snapshot of the configuration.
+  payload        Json
+  /// SHA-256 of the canonical JSON payload.
+  checksum       String
+  notes          String?
+  createdById    String
+  createdBy      AdminUser    @relation(fields: [createdById], references: [id], onDelete: Restrict)
+  createdAt      DateTime     @default(now())
+  submittedAt    DateTime?
+  activatedAt    DateTime?
+  rejectedReason String?
+
+  @@unique([scope, version])
+  @@index([scope, status])
+}
+
+// ---------------------------------------------------------------------------
+// Command queue for live game servers — used from Phase 4
+// ---------------------------------------------------------------------------
+
+enum CommandType {
+  GRANT_REWARD
+  WARN_PLAYER
+  KICK_PLAYER
+  RESTRICT_PLAYER
+  BAN_PLAYER
+  UNBAN_PLAYER
+  PUBLISH_CONFIG
+}
+
+enum CommandStatus {
+  /// Stored, waiting for a game server to claim it.
+  PENDING
+  /// Claimed by a game server; awaiting acknowledgement.
+  DELIVERED
+  /// Game server reported success.
+  SUCCEEDED
+  /// Game server reported failure.
+  FAILED
+  /// Not acknowledged before expiresAt; must never be executed afterwards.
+  EXPIRED
+  CANCELLED
+}
+
+model AdminCommand {
+  id             String        @id @default(cuid())
+  /// Client-generated key; a repeated submission returns the existing command
+  /// instead of creating a duplicate (prevents double reward grants).
+  idempotencyKey String        @unique
+  /// Shared with AuditLog.correlationId and the game server acknowledgement.
+  correlationId  String        @unique
+  type           CommandType
+  targetUserId   String?
+  payload        Json
+  status         CommandStatus @default(PENDING)
+  createdById    String
+  createdBy      AdminUser     @relation(fields: [createdById], references: [id], onDelete: Restrict)
+  createdAt      DateTime      @default(now())
+  expiresAt      DateTime
+  deliveredAt    DateTime?
+  completedAt    DateTime?
+  attempts       Int           @default(0)
+  resultCode     String?
+  resultMessage  String?
+
+  @@index([status, expiresAt])
+  @@index([targetUserId])
+}

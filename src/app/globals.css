@@ -1,0 +1,88 @@
+@import "tailwindcss";
+
+/*
+ * Beach Avenue! Admin design tokens.
+ * Dark, operational palette with a restrained coastal (sea-teal) accent.
+ */
+@theme {
+  --color-canvas: #0a0f1a;
+  --color-surface: #101827;
+  --color-surface-raised: #162033;
+  --color-border: #233047;
+  --color-border-strong: #33435f;
+  --color-fg: #e6ecf5;
+  --color-muted: #9aa8bf;
+  --color-subtle: #6b7a93;
+
+  --color-accent: #2cc4b4;
+  --color-accent-strong: #5fe0d2;
+  --color-accent-fg: #04201d;
+
+  --color-demo: #f5b544;
+  --color-demo-bg: #3a2a0c;
+  --color-danger: #f37272;
+  --color-danger-bg: #3b1518;
+  --color-success: #4ad08e;
+  --color-success-bg: #0f3324;
+  --color-info: #6aa8ff;
+  --color-info-bg: #132a4a;
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  html,
+  body {
+    background-color: var(--color-canvas);
+    color: var(--color-fg);
+  }
+
+  body {
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Visible, consistent keyboard focus everywhere. */
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      transition-duration: 0.01ms !important;
+      animation-duration: 0.01ms !important;
+    }
+  }
+}
+
+/* Mobile navigation drawer (modal <dialog> in the top layer). */
+.nav-drawer {
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  overflow: hidden;
+}
+
+.nav-drawer::backdrop {
+  background: rgb(0 0 0 / 0.55);
+}
+
+.nav-drawer-sheet {
+  width: min(18rem, 82dvw);
+  height: 100svh;
+  overflow-y: auto;
+}
